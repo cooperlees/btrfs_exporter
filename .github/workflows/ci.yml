@@ -4,7 +4,7 @@ on: [push, pull_request]
 
 jobs:
   build_and_test:
-    name: Rust project testing
+    name: Rust Cargo project CI
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -15,6 +15,10 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: fmt
+
+      - uses: actions-rs/cargo@v1
+        with:
+          command: test
 
       - uses: actions-rs/cargo@v1
         with:
