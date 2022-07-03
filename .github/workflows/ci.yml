@@ -12,15 +12,18 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: actions-rs/cargo@v1
+      - name: Cargo format
+        uses: actions-rs/cargo@v1
         with:
           command: fmt
 
-      - uses: actions-rs/cargo@v1
+      - name: Cargo test
+        uses: actions-rs/cargo@v1
         with:
           command: test
 
-      - uses: actions-rs/cargo@v1
+      - name: Cargo release + all feature build
+        uses: actions-rs/cargo@v1
         with:
           command: build
           args: --release --all-features
