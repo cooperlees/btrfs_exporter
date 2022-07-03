@@ -1,9 +1,10 @@
 use clap::Parser;
-use log::{debug, info};
+use log::{debug, error, info};
 use std::collections::HashMap;
 
 use anyhow::Result;
 use prometheus_exporter::{self, prometheus::register_counter};
+use subprocess::{Popen, PopenConfig, Redirection};
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -15,6 +16,7 @@ struct Cli {
 }
 
 // TODO - Change hashmaps to use this + implement traits to learn
+#[allow(dead_code)]
 struct BtrfsErrors {
     corruption_io_errs: f64,
     flush_io_errs: f64,
@@ -26,7 +28,6 @@ struct BtrfsErrors {
 fn parse_btrfs_stats(stats_output: String) -> HashMap<String, f64> {
     let mut device_stats = HashMap::new();
     for line in stats_output.lines() {
-        // [/dev/sdb].write_io_errs    0
         let dev_stats: Vec<&str> = line.split("]").collect();
         let stat_values: Vec<&str> = dev_stats[1].split_whitespace().collect();
         let dev_path: Vec<&str> = dev_stats[0].split("/").collect();
@@ -36,16 +37,31 @@ fn parse_btrfs_stats(stats_output: String) -> HashMap<String, f64> {
     device_stats
 }
 
-fn get_btrfs_stats(mountpoints: Vec<String>) -> Result<HashMap<String, f64>> {
+fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
     let btrfs_bin = "/usr/bin/btrfs";
     let sudo_bin = "/usr/bin/sudo";
     let mut stats = HashMap::new();
 
-    // Call x to get error counters
-    for mountpoint in mountpoints {
+    // Call btrfs CLI to get error counters
+    for mountpoint in mountpoints.split(",") {
         let cmd = Vec::from([sudo_bin, btrfs_bin, "device", "stats", &mountpoint]);
         debug!("--> Running {:?}", cmd);
-        // let btrfs_errors = Exec::cmd("sort").capture()?.stdout_str();
+        let mut p = Popen::create(
+            &cmd,
+            PopenConfig {
+                stdout: Redirection::Pipe,
+                ..Default::default()
+            },
+        )?;
+        let (out, err) = p.communicate(None)?;
+        // TODO: Workout how to get return value into error logging
+        if let Some(_exit_status) = p.poll() {
+            let btrfs_stats = parse_btrfs_stats(out.unwrap());
+            stats.extend(btrfs_stats);
+        } else {
+            p.terminate()?;
+            error!("{:?} failed: {}", cmd, err.unwrap());
+        }
     }
 
     Ok(stats)
@@ -63,12 +79,14 @@ fn main() -> () {
     let binding = bind_uri.parse().unwrap();
     let exporter = prometheus_exporter::start(binding).unwrap();
 
-    let counter = register_counter!("example_exporter_counter", "help").unwrap();
-    loop {
-        let guard = exporter.wait_request();
-        counter.inc();
-        drop(guard);
-    }
+    //let counter = register_counter!("example_exporter_counter", "help").unwrap();
+    //loop {
+    //    let guard = exporter.wait_request();
+    //    counter.inc();
+    //    drop(guard);
+    //}
+    let stats_hash = get_btrfs_stats(args.mountpoints).unwrap();
+    println!("Stats: {:?}", stats_hash);
 }
 
 #[cfg(test)]
