@@ -43,6 +43,7 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
     let mut stats = HashMap::new();
 
     // Call btrfs CLI to get error counters
+    // TODO: Learn how to thread and do a mountpoint at a time
     for mountpoint in mountpoints.split(",") {
         let cmd = Vec::from([sudo_bin, btrfs_bin, "device", "stats", &mountpoint]);
         debug!("--> Running {:?}", cmd);
@@ -67,6 +68,7 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
     Ok(stats)
 }
 
+// TODO: Learn how to catch KeyBoardInterrupt / SIGINT + return correct unix exit status etc.
 fn main() -> () {
     let args = Cli::parse();
     env_logger::Builder::new()
@@ -80,13 +82,15 @@ fn main() -> () {
     let exporter = prometheus_exporter::start(binding).unwrap();
 
     //let counter = register_counter!("example_exporter_counter", "help").unwrap();
-    //loop {
-    //    let guard = exporter.wait_request();
-    //    counter.inc();
-    //    drop(guard);
-    //}
-    let stats_hash = get_btrfs_stats(args.mountpoints).unwrap();
-    println!("Stats: {:?}", stats_hash);
+    loop {
+        let guard = exporter.wait_request();
+        let stats_hash = get_btrfs_stats(args.mountpoints.clone()).unwrap();
+        debug!("Stats: {:?}", stats_hash);
+
+        // TODO: init all prom guages + update each devices values with labels for device name
+
+        drop(guard);
+    }
 }
 
 #[cfg(test)]
