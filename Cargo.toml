@@ -1,0 +1,12 @@
+[package]
+name = "btrfs_exporter"
+version = "22.6.3"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "3.2.8", features = ["derive"] }
+clap-verbosity-flag = "1.0.1"
+env_logger = "0.9"
+log = "0.4"
+prometheus_exporter = "0.8.4"
