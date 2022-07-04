@@ -3,7 +3,8 @@ use log::{debug, error, info};
 use std::collections::HashMap;
 
 use anyhow::Result;
-use prometheus_exporter::{self, prometheus::register_counter};
+// TODO: See if we can get rid of the self here + learn what it's for
+use prometheus_exporter::{self, prometheus::register_gauge_vec, prometheus::GaugeVec};
 use subprocess::{Popen, PopenConfig, Redirection};
 
 #[derive(Debug, Parser)]
@@ -77,19 +78,55 @@ fn main() -> () {
 
     info!("Starting btrfs prometheus exporter on port {}", args.port);
 
+    // TODO: make IPv6 work ...
     let bind_uri = format!("0.0.0.0:{}", args.port);
     let binding = bind_uri.parse().unwrap();
     let exporter = prometheus_exporter::start(binding).unwrap();
 
-    //let counter = register_counter!("example_exporter_counter", "help").unwrap();
+    // TODO: make more accurate help to explain what they mean
+    let labels = vec!["device"];
+    let corruption_errs =
+        register_gauge_vec!("btrfs_corruption_errs", "BTRFS Corruption Errors", &labels).unwrap();
+    let flush_io_errs =
+        register_gauge_vec!("btrfs_flush_io_errs", "BTRFS Flush IO Errors", &labels).unwrap();
+    let generation_errs =
+        register_gauge_vec!("btrfs_generation_errs", "BTRFS Generation Errors", &labels).unwrap();
+    let read_io_errs =
+        register_gauge_vec!("btrfs_read_io_errs", "BTRFS Read IO Errors", &labels).unwrap();
+    let write_io_errs =
+        register_gauge_vec!("btrfs_write_io_errs", "BTRFS Write IO Errors", &labels,).unwrap();
+
     loop {
         let guard = exporter.wait_request();
         let stats_hash = get_btrfs_stats(args.mountpoints.clone()).unwrap();
-        debug!("Stats: {:?}", stats_hash);
+        debug!("Stats collected: {:?}", stats_hash);
 
-        // TODO: init all prom guages + update each devices values with labels for device name
+        // TODO: Move to function passing all guages etc.
+        for (k, err_count) in &stats_hash {
+            let k_parts: Vec<&str> = k.split("_").collect();
+            let device: String = k_parts[0].clone().to_string();
+            let replace_pattern = format!("{}_", device);
+            let stat_name = k.replace(&replace_pattern, "");
+
+            let mut stat_guage: Option<&GaugeVec> = None;
+            match stat_name.as_str() {
+                "corruption_errs" => stat_guage = Some(&corruption_errs),
+                "flush_io_errs" => stat_guage = Some(&flush_io_errs),
+                "generation_errs" => stat_guage = Some(&generation_errs),
+                "read_io_errs" => stat_guage = Some(&read_io_errs),
+                "write_io_errs" => stat_guage = Some(&write_io_errs),
+                _ => error!("{} stat not handled", stat_name),
+            };
+            if !stat_guage.is_none() {
+                stat_guage
+                    .unwrap()
+                    .with_label_values(&[device.as_str()])
+                    .set(*err_count);
+            }
+        }
 
         drop(guard);
+        info!("{} btrfs stats collected and served", stats_hash.len());
     }
 }
 
