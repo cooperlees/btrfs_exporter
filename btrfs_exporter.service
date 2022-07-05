@@ -1,0 +1,16 @@
+[Unit]
+Description=Daemon to collect btrfs stats for prometheus
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/btrfs_expoter -vvvv /cesspool,/data
+Restart=on-failure
+# Limit to 3 restarts per 30 seconds
+RestartSec=5
+StartLimitInterval=30
+StartLimitBurst=3
+User=cooper
+
+[Install]
+WantedBy=multi-user.target
