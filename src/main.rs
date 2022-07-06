@@ -62,7 +62,7 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
             stats.extend(btrfs_stats);
         } else {
             p.terminate()?;
-            error!("{:?} failed: {}", cmd, err.unwrap());
+            error!("{:?} failed: {:?}", cmd, err);
         }
     }
 
