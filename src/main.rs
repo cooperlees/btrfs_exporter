@@ -8,6 +8,7 @@ use prometheus_exporter::{self, prometheus::register_gauge_vec, prometheus::Gaug
 use subprocess::{Popen, PopenConfig, Redirection};
 
 #[derive(Debug, Parser)]
+#[clap(author, version, about, long_about = None)]
 struct Cli {
     mountpoints: String,
     #[clap(short, long, value_parser, default_value_t = 9899)]
