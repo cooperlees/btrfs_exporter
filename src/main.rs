@@ -1,6 +1,9 @@
 use clap::Parser;
 use log::{debug, error, info};
+use signal_hook::{consts::SIGINT, iterator::Signals};
 use std::collections::HashMap;
+use std::process;
+use std::thread;
 
 use anyhow::Result;
 // TODO: See if we can get rid of the self here + learn what it's for
@@ -70,8 +73,8 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
     Ok(stats)
 }
 
-// TODO: Learn how to catch KeyBoardInterrupt / SIGINT + return correct unix exit status etc.
 fn main() -> () {
+    let mut signals = Signals::new(&[SIGINT]).unwrap();
     let args = Cli::parse();
     env_logger::Builder::new()
         .filter_level(args.verbose.log_level_filter())
@@ -82,6 +85,17 @@ fn main() -> () {
     let bind_uri = format!("[::]:{}", args.port);
     let binding = bind_uri.parse().unwrap();
     let exporter = prometheus_exporter::start(binding).unwrap();
+
+    // Add signal handler for clean exit
+    thread::spawn(move || {
+        for sig in signals.forever() {
+            // TODO: Print signal name somehow ...
+            info!("Received signal {:?}", sig);
+            if sig == SIGINT {
+                process::exit(0);
+            }
+        }
+    });
 
     // TODO: make more accurate help to explain what they mean
     let labels = vec!["device"];
