@@ -97,18 +97,42 @@ fn main() -> () {
         }
     });
 
-    // TODO: make more accurate help to explain what they mean
+    // https://btrfs.readthedocs.io/en/latest/btrfs-device.html#device-stats
     let labels = vec!["device"];
-    let corruption_errs =
-        register_gauge_vec!("btrfs_corruption_errs", "BTRFS Corruption Errors", &labels).unwrap();
+    let corruption_errs = register_gauge_vec!(
+        "btrfs_corruption_errs",
+        "A block checksum mismatched or a corrupted metadata header was found.",
+        &labels
+    )
+    .unwrap();
     let flush_io_errs =
-        register_gauge_vec!("btrfs_flush_io_errs", "BTRFS Flush IO Errors", &labels).unwrap();
-    let generation_errs =
-        register_gauge_vec!("btrfs_generation_errs", "BTRFS Generation Errors", &labels).unwrap();
+        register_gauge_vec!(
+            "btrfs_flush_io_errs",
+            concat!(
+                "Number of failed writes with the FLUSH flag set. The flushing is a method of forcing a particular order between write ",
+                "requests and is crucial for implementing crash consistency. In case of btrfs, all the metadata blocks must be permanently ",
+                "stored on the block device before the superblock is written.",
+            ),
+            &labels
+        ).unwrap();
+    let generation_errs = register_gauge_vec!(
+        "btrfs_generation_errs",
+        "The block generation does not match the expected value (eg. stored in the parent node).",
+        &labels
+    )
+    .unwrap();
     let read_io_errs =
-        register_gauge_vec!("btrfs_read_io_errs", "BTRFS Read IO Errors", &labels).unwrap();
+        register_gauge_vec!(
+            "btrfs_read_io_errs",
+            "Failed reads to the block devices, means that the layers beneath the filesystem were not able to satisfy the read request.",
+            &labels
+        ).unwrap();
     let write_io_errs =
-        register_gauge_vec!("btrfs_write_io_errs", "BTRFS Write IO Errors", &labels,).unwrap();
+        register_gauge_vec!(
+            "btrfs_write_io_errs",
+            "Failed writes to the block devices, means that the layers beneath the filesystem were not able to satisfy the write request.",
+            &labels,
+        ).unwrap();
 
     loop {
         let guard = exporter.wait_request();
