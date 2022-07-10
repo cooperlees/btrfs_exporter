@@ -79,8 +79,7 @@ fn main() -> () {
 
     info!("Starting btrfs prometheus exporter on port {}", args.port);
 
-    // TODO: make IPv6 work ...
-    let bind_uri = format!("0.0.0.0:{}", args.port);
+    let bind_uri = format!("[::]:{}", args.port);
     let binding = bind_uri.parse().unwrap();
     let exporter = prometheus_exporter::start(binding).unwrap();
 
