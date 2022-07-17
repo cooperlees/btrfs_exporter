@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/rs"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+
+  - package-ecosystem: "github-actions"
+    # Workflow files in .github/workflows will be checked
+    directory: "/"
+    schedule:
+      interval: "daily"
