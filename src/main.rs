@@ -43,31 +43,49 @@ fn parse_btrfs_stats(stats_output: String) -> HashMap<String, f64> {
     device_stats
 }
 
+fn _fork_btrfs(cmd: Vec<String>) -> Result<HashMap<String, f64>> {
+    let mut p = Popen::create(
+        &cmd,
+        PopenConfig {
+            stdout: Redirection::Pipe,
+            ..Default::default()
+        },
+    )?;
+    let (out, err) = p.communicate(None)?;
+    // TODO: Workout how to get return value into error logging
+    if let Some(_exit_status) = p.poll() {
+        return Ok(parse_btrfs_stats(out.unwrap()));
+    } else {
+        p.terminate()?;
+        error!("{:?} failed: {:?}", cmd, err);
+    }
+    Ok(HashMap::new())
+}
+
 fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
-    let btrfs_bin = "/usr/bin/btrfs";
-    let sudo_bin = "/usr/bin/sudo";
-    let mut stats = HashMap::new();
+    let btrfs_bin = "/usr/bin/btrfs".to_string();
+    let sudo_bin = "/usr/bin/sudo".to_string();
 
     // Call btrfs CLI to get error counters
-    // TODO: Learn how to thread and do a mountpoint at a time
+    let mut btrfs_threads: Vec<thread::JoinHandle<Result<HashMap<String, f64>>>> = vec![];
     for mountpoint in mountpoints.split(',') {
-        let cmd = Vec::from([sudo_bin, btrfs_bin, "device", "stats", mountpoint]);
-        debug!("--> Running {:?}", cmd);
-        let mut p = Popen::create(
-            &cmd,
-            PopenConfig {
-                stdout: Redirection::Pipe,
-                ..Default::default()
-            },
-        )?;
-        let (out, err) = p.communicate(None)?;
-        // TODO: Workout how to get return value into error logging
-        if let Some(_exit_status) = p.poll() {
-            let btrfs_stats = parse_btrfs_stats(out.unwrap());
-            stats.extend(btrfs_stats);
-        } else {
-            p.terminate()?;
-            error!("{:?} failed: {:?}", cmd, err);
+        let cmd = Vec::from([
+            sudo_bin.clone(),
+            btrfs_bin.clone(),
+            "device".to_string(),
+            "stats".to_string(),
+            mountpoint.to_string(),
+        ]);
+        debug!("--> Making a thread to run {:?}", cmd);
+        btrfs_threads.push(thread::spawn(|| _fork_btrfs(cmd)))
+    }
+
+    // Collect the stats from each thread
+    let mut stats: HashMap<String, f64> = HashMap::new();
+    for thread in btrfs_threads.into_iter() {
+        match thread.join().unwrap() {
+            Ok(stat_hash) => stats.extend(stat_hash),
+            Err(_) => continue, // error is logged in function ...
         }
     }
 
