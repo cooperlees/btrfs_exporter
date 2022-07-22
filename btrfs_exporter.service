@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/home/cooper/.cargo/bin/btrfs_exporter -vvvv /cesspool,/data
+ExecStart=/home/cooper/.cargo/bin/btrfs_exporter /cesspool,/data
 Restart=on-failure
 # Limit to 3 restarts per 30 seconds
 RestartSec=5

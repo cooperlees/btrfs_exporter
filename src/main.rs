@@ -1,4 +1,5 @@
 use clap::Parser;
+use clap_verbosity_flag::InfoLevel;
 use log::{debug, error, info};
 use signal_hook::{consts::SIGINT, iterator::Signals};
 use std::collections::HashMap;
@@ -17,7 +18,7 @@ struct Cli {
     #[clap(short, long, value_parser, default_value_t = 9899)]
     port: u32,
     #[clap(flatten)]
-    verbose: clap_verbosity_flag::Verbosity,
+    verbose: clap_verbosity_flag::Verbosity<InfoLevel>,
 }
 
 // TODO - Change hashmaps to use this + implement traits to learn
@@ -33,9 +34,9 @@ struct BtrfsErrors {
 fn parse_btrfs_stats(stats_output: String) -> HashMap<String, f64> {
     let mut device_stats = HashMap::new();
     for line in stats_output.lines() {
-        let dev_stats: Vec<&str> = line.split("]").collect();
+        let dev_stats: Vec<&str> = line.split(']').collect();
         let stat_values: Vec<&str> = dev_stats[1].split_whitespace().collect();
-        let dev_path: Vec<&str> = dev_stats[0].split("/").collect();
+        let dev_path: Vec<&str> = dev_stats[0].split('/').collect();
         let hash_key = format!("{}_{}", &dev_path[2].to_string(), &stat_values[0][1..]);
         device_stats.insert(hash_key, stat_values[1].parse::<f64>().unwrap());
     }
@@ -49,8 +50,8 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
 
     // Call btrfs CLI to get error counters
     // TODO: Learn how to thread and do a mountpoint at a time
-    for mountpoint in mountpoints.split(",") {
-        let cmd = Vec::from([sudo_bin, btrfs_bin, "device", "stats", &mountpoint]);
+    for mountpoint in mountpoints.split(',') {
+        let cmd = Vec::from([sudo_bin, btrfs_bin, "device", "stats", mountpoint]);
         debug!("--> Running {:?}", cmd);
         let mut p = Popen::create(
             &cmd,
@@ -73,7 +74,7 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
     Ok(stats)
 }
 
-fn main() -> () {
+fn main() {
     let mut signals = Signals::new(&[SIGINT]).unwrap();
     let args = Cli::parse();
     env_logger::Builder::new()
@@ -141,8 +142,8 @@ fn main() -> () {
 
         // TODO: Move to function passing all guages etc.
         for (k, err_count) in &stats_hash {
-            let k_parts: Vec<&str> = k.split("_").collect();
-            let device: String = k_parts[0].clone().to_string();
+            let k_parts: Vec<&str> = k.split('_').collect();
+            let device: String = k_parts[0].to_string();
             let replace_pattern = format!("{}_", device);
             let stat_name = k.replace(&replace_pattern, "");
 
@@ -155,9 +156,8 @@ fn main() -> () {
                 "write_io_errs" => stat_guage = Some(&write_io_errs),
                 _ => error!("{} stat not handled", stat_name),
             };
-            if !stat_guage.is_none() {
-                stat_guage
-                    .unwrap()
+            if let Some(stat_guage_value) = stat_guage {
+                stat_guage_value
                     .with_label_values(&[device.as_str()])
                     .set(*err_count);
             }
