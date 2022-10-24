@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.0.18", features = ["derive"] }
-clap-verbosity-flag = "1.0.1"
+clap-verbosity-flag = "2.0.0"
 env_logger = "0.9"
 log = "0.4"
 prometheus_exporter = "0.8.4"
