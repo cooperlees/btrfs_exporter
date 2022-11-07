@@ -93,7 +93,7 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
 }
 
 fn main() {
-    let mut signals = Signals::new(&[SIGINT]).unwrap();
+    let mut signals = Signals::new([SIGINT]).unwrap();
     let args = Cli::parse();
     env_logger::Builder::new()
         .filter_level(args.verbose.log_level_filter())
