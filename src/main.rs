@@ -1,10 +1,10 @@
-use clap::Parser;
-use clap_verbosity_flag::InfoLevel;
-use log::{debug, error, info};
-use signal_hook::{consts::SIGINT, iterator::Signals};
 use std::collections::HashMap;
 use std::process;
 use std::thread;
+
+use clap::Parser;
+use signal_hook::{consts::SIGINT, iterator::Signals};
+use tracing::{debug, error, info};
 
 use anyhow::Result;
 // TODO: See if we can get rid of the self here + learn what it's for
@@ -14,11 +14,14 @@ use subprocess::{Popen, PopenConfig, Redirection};
 #[derive(Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
 struct Cli {
+    /// Mountpoints to grab stats for
     mountpoints: String,
+    /// Port to listen on
     #[clap(short, long, value_parser, default_value_t = 9899)]
     port: u32,
-    #[clap(flatten)]
-    verbose: clap_verbosity_flag::Verbosity<InfoLevel>,
+    /// Adjust the console log-level
+    #[arg(long, short, value_enum, ignore_case = true, default_value = "Info")]
+    log_level: btrfs_exporter::LogLevels,
 }
 
 // TODO - Change hashmaps to use this + implement traits to learn
@@ -95,9 +98,7 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
 fn main() {
     let mut signals = Signals::new([SIGINT]).unwrap();
     let args = Cli::parse();
-    env_logger::Builder::new()
-        .filter_level(args.verbose.log_level_filter())
-        .init();
+    btrfs_exporter::setup_logging(args.log_level.into());
 
     info!("Starting btrfs prometheus exporter on port {}", args.port);
 
