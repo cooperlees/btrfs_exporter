@@ -7,10 +7,10 @@ use signal_hook::{consts::SIGINT, iterator::Signals};
 use tracing::{debug, error, info};
 
 use anyhow::Result;
+use opentelemetry::trace::Tracer;
 // TODO: See if we can get rid of the self here + learn what it's for
 use prometheus_exporter::{self, prometheus::register_gauge_vec, prometheus::GaugeVec};
 use subprocess::{Popen, PopenConfig, Redirection};
-
 
 #[derive(Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -23,6 +23,9 @@ struct Cli {
     /// Adjust the console log-level
     #[arg(long, short, value_enum, ignore_case = true, default_value = "Info")]
     log_level: btrfs_exporter::LogLevels,
+    /// Opentelemetry endpoint
+    #[arg(long, short, default_value = "localhost:14268")]
+    opentelemetry: String,
 }
 
 // TODO - Change hashmaps to use this + implement traits to learn
@@ -35,6 +38,7 @@ struct BtrfsErrors {
     write_io_errs: f64,
 }
 
+#[tracing::instrument]
 fn parse_btrfs_stats(stats_output: String) -> HashMap<String, f64> {
     let mut device_stats = HashMap::new();
     for line in stats_output.lines() {
@@ -47,6 +51,7 @@ fn parse_btrfs_stats(stats_output: String) -> HashMap<String, f64> {
     device_stats
 }
 
+#[tracing::instrument]
 fn _fork_btrfs(cmd: Vec<String>) -> Result<HashMap<String, f64>> {
     let mut p = Popen::create(
         &cmd,
@@ -66,6 +71,7 @@ fn _fork_btrfs(cmd: Vec<String>) -> Result<HashMap<String, f64>> {
     Ok(HashMap::new())
 }
 
+#[tracing::instrument]
 fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
     let btrfs_bin = "/usr/bin/btrfs".to_string();
     let sudo_bin = "/usr/bin/sudo".to_string();
@@ -96,9 +102,14 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
     Ok(stats)
 }
 
-fn main() {
+fn main() -> Result<(), anyhow::Error> {
     let mut signals = Signals::new([SIGINT]).unwrap();
     let args = Cli::parse();
+    opentelemetry::global::set_text_map_propagator(opentelemetry_jaeger::Propagator::new());
+    let tracer = opentelemetry_jaeger::new_agent_pipeline()
+        .with_endpoint(&args.opentelemetry)
+        .with_service_name("btrfs_exporter")
+        .install_simple()?;
     btrfs_exporter::setup_logging(args.log_level.into());
 
     info!("Starting btrfs prometheus exporter on port {}", args.port);
@@ -157,34 +168,36 @@ fn main() {
 
     loop {
         let guard = exporter.wait_request();
-        let stats_hash = get_btrfs_stats(args.mountpoints.clone()).unwrap();
-        debug!("Stats collected: {:?}", stats_hash);
+        tracer.in_span("processing request", |_cx| {
+            // TODO: Use context
+            let stats_hash = get_btrfs_stats(args.mountpoints.clone()).unwrap();
+            debug!("Stats collected: {:?}", stats_hash);
 
-        // TODO: Move to function passing all guages etc.
-        for (k, err_count) in &stats_hash {
-            let k_parts: Vec<&str> = k.split('_').collect();
-            let device: String = k_parts[0].to_string();
-            let replace_pattern = format!("{}_", device);
-            let stat_name = k.replace(&replace_pattern, "");
+            // TODO: Move to function passing all guages etc.
+            for (k, err_count) in &stats_hash {
+                let k_parts: Vec<&str> = k.split('_').collect();
+                let device: String = k_parts[0].to_string();
+                let replace_pattern = format!("{}_", device);
+                let stat_name = k.replace(&replace_pattern, "");
 
-            let mut stat_guage: Option<&GaugeVec> = None;
-            match stat_name.as_str() {
-                "corruption_errs" => stat_guage = Some(&corruption_errs),
-                "flush_io_errs" => stat_guage = Some(&flush_io_errs),
-                "generation_errs" => stat_guage = Some(&generation_errs),
-                "read_io_errs" => stat_guage = Some(&read_io_errs),
-                "write_io_errs" => stat_guage = Some(&write_io_errs),
-                _ => error!("{} stat not handled", stat_name),
-            };
-            if let Some(stat_guage_value) = stat_guage {
-                stat_guage_value
-                    .with_label_values(&[device.as_str()])
-                    .set(*err_count);
+                let mut stat_guage: Option<&GaugeVec> = None;
+                match stat_name.as_str() {
+                    "corruption_errs" => stat_guage = Some(&corruption_errs),
+                    "flush_io_errs" => stat_guage = Some(&flush_io_errs),
+                    "generation_errs" => stat_guage = Some(&generation_errs),
+                    "read_io_errs" => stat_guage = Some(&read_io_errs),
+                    "write_io_errs" => stat_guage = Some(&write_io_errs),
+                    _ => error!("{} stat not handled", stat_name),
+                };
+                if let Some(stat_guage_value) = stat_guage {
+                    stat_guage_value
+                        .with_label_values(&[device.as_str()])
+                        .set(*err_count);
+                }
             }
-        }
-
+            info!("{} btrfs stats collected and served", stats_hash.len());
+        });
         drop(guard);
-        info!("{} btrfs stats collected and served", stats_hash.len());
     }
 }
 
