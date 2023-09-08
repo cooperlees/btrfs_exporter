@@ -11,6 +11,9 @@ use anyhow::Result;
 use prometheus_exporter::{self, prometheus::register_gauge_vec, prometheus::GaugeVec};
 use subprocess::{Popen, PopenConfig, Redirection};
 
+use btrfs_exporter::setup_logging;
+use btrfs_exporter::LogLevels;
+
 #[derive(Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
 struct Cli {
@@ -21,7 +24,7 @@ struct Cli {
     port: u32,
     /// Adjust the console log-level
     #[arg(long, short, value_enum, ignore_case = true, default_value = "Info")]
-    log_level: btrfs_exporter::LogLevels,
+    log_level: LogLevels,
 }
 
 // TODO - Change hashmaps to use this + implement traits to learn
@@ -98,7 +101,7 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
 fn main() {
     let mut signals = Signals::new([SIGINT]).unwrap();
     let args = Cli::parse();
-    btrfs_exporter::setup_logging(args.log_level.into());
+    setup_logging(args.log_level.into());
 
     info!("Starting btrfs prometheus exporter on port {}", args.port);
 
