@@ -33,6 +33,7 @@ btrfs_read_io_errs{device="sdd"} 0
 btrfs_write_io_errs{device="sdb"} 0
 btrfs_write_io_errs{device="sdc"} 0
 btrfs_write_io_errs{device="sdd"} 0
+```
 
 ## Tracing
 
@@ -43,4 +44,3 @@ btrfs_write_io_errs{device="sdd"} 0
 - Clean shutdown flushes spans on `SIGINT`.
 
 Example: btrfs_exporter --opentelemetry http://127.0.0.1:4317 /mnt/btrfs
-```
