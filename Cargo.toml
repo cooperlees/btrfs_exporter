@@ -16,3 +16,4 @@ tracing-core = "0.1.36"
 tracing-glog = "0.4"
 tracing-opentelemetry = "0.21.0"
 tracing-subscriber = "0.3.22"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

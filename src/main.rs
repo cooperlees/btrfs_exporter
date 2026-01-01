@@ -103,7 +103,8 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
     Ok(stats)
 }
 
-fn main() -> Result<(), anyhow::Error> {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> Result<(), anyhow::Error> {
     let mut signals = Signals::new([SIGINT]).unwrap();
     let args = Cli::parse();
     opentelemetry::global::set_text_map_propagator(
