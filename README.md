@@ -33,4 +33,13 @@ btrfs_read_io_errs{device="sdd"} 0
 btrfs_write_io_errs{device="sdb"} 0
 btrfs_write_io_errs{device="sdc"} 0
 btrfs_write_io_errs{device="sdd"} 0
+
+## Tracing
+
+- This exporter emits OpenTelemetry traces and spans via `tracing`.
+- To send spans to Jaeger, run a local Jaeger Agent and point to it with `--opentelemetry` (default `127.0.0.1:6831`).
+- Uses W3C TraceContext propagation; Jaeger UI will display spans for instrumented operations.
+- Clean shutdown flushes spans on `SIGINT`.
+
+Example: btrfs_exporter --opentelemetry 127.0.0.1:6831 /mnt/btrfs
 ```

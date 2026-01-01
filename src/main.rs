@@ -24,7 +24,7 @@ struct Cli {
     #[arg(long, short, value_enum, ignore_case = true, default_value = "Info")]
     log_level: btrfs_exporter::LogLevels,
     /// Opentelemetry endpoint
-    #[arg(long, short, default_value = "localhost:14268")]
+    #[arg(long, short, default_value = "127.0.0.1:6831")]
     opentelemetry: String,
 }
 
@@ -105,12 +105,20 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
 fn main() -> Result<(), anyhow::Error> {
     let mut signals = Signals::new([SIGINT]).unwrap();
     let args = Cli::parse();
-    opentelemetry::global::set_text_map_propagator(opentelemetry_jaeger::Propagator::new());
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry::sdk::propagation::TraceContextPropagator::new(),
+    );
     let tracer = opentelemetry_jaeger::new_agent_pipeline()
         .with_endpoint(&args.opentelemetry)
         .with_service_name("btrfs_exporter")
+        .with_trace_config(opentelemetry::sdk::trace::Config::default().with_resource(
+            opentelemetry::sdk::Resource::new(vec![opentelemetry::KeyValue::new(
+                "service.version",
+                env!("CARGO_PKG_VERSION"),
+            )]),
+        ))
         .install_simple()?;
-    btrfs_exporter::setup_logging(args.log_level.into());
+    btrfs_exporter::setup_logging(args.log_level.into(), Some(tracer.clone()));
 
     info!("Starting btrfs prometheus exporter on port {}", args.port);
 
@@ -124,6 +132,8 @@ fn main() -> Result<(), anyhow::Error> {
             // TODO: Print signal name somehow ...
             info!("Received signal {:?}", sig);
             if sig == SIGINT {
+                // Ensure all spans are flushed before exit
+                opentelemetry::global::shutdown_tracer_provider();
                 process::exit(0);
             }
         }
