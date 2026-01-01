@@ -8,6 +8,7 @@ use tracing::{debug, error, info};
 
 use anyhow::Result;
 use opentelemetry::trace::Tracer;
+use opentelemetry_otlp::WithExportConfig;
 // TODO: See if we can get rid of the self here + learn what it's for
 use prometheus_exporter::{self, prometheus::register_gauge_vec, prometheus::GaugeVec};
 use subprocess::{Popen, PopenConfig, Redirection};
@@ -24,7 +25,7 @@ struct Cli {
     #[arg(long, short, value_enum, ignore_case = true, default_value = "Info")]
     log_level: btrfs_exporter::LogLevels,
     /// Opentelemetry endpoint
-    #[arg(long, short, default_value = "127.0.0.1:6831")]
+    #[arg(long, short, default_value = "http://127.0.0.1:4317")]
     opentelemetry: String,
 }
 
@@ -108,14 +109,18 @@ fn main() -> Result<(), anyhow::Error> {
     opentelemetry::global::set_text_map_propagator(
         opentelemetry::sdk::propagation::TraceContextPropagator::new(),
     );
-    let tracer = opentelemetry_jaeger::new_agent_pipeline()
-        .with_endpoint(&args.opentelemetry)
-        .with_service_name("btrfs_exporter")
+    let tracer = opentelemetry_otlp::new_pipeline()
+        .tracing()
+        .with_exporter(
+            opentelemetry_otlp::new_exporter()
+                .tonic()
+                .with_endpoint(&args.opentelemetry),
+        )
         .with_trace_config(opentelemetry::sdk::trace::Config::default().with_resource(
-            opentelemetry::sdk::Resource::new(vec![opentelemetry::KeyValue::new(
-                "service.version",
-                env!("CARGO_PKG_VERSION"),
-            )]),
+            opentelemetry::sdk::Resource::new(vec![
+                opentelemetry::KeyValue::new("service.name", "btrfs_exporter"),
+                opentelemetry::KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
+            ]),
         ))
         .install_simple()?;
     btrfs_exporter::setup_logging(args.log_level.into(), Some(tracer.clone()));
