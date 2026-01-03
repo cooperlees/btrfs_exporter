@@ -1,17 +1,17 @@
 use std::collections::HashMap;
 use std::process;
-use std::thread;
 
 use clap::Parser;
-use signal_hook::{consts::SIGINT, iterator::Signals};
+use futures::future::join_all;
+use tokio::process::Command;
+use tokio::signal;
+use tokio::time::{timeout, Duration};
 use tracing::{debug, error, info};
 
 use anyhow::Result;
-use opentelemetry::trace::Tracer;
 use opentelemetry_otlp::WithExportConfig;
 // TODO: See if we can get rid of the self here + learn what it's for
 use prometheus_exporter::{self, prometheus::register_gauge_vec, prometheus::GaugeVec};
-use subprocess::{Popen, PopenConfig, Redirection};
 
 #[derive(Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -58,34 +58,38 @@ fn parse_btrfs_stats(stats_output: String) -> HashMap<String, f64> {
 }
 
 #[tracing::instrument]
-fn _fork_btrfs(cmd: Vec<String>) -> Result<HashMap<String, f64>> {
-    let mut p = Popen::create(
-        &cmd,
-        PopenConfig {
-            stdout: Redirection::Pipe,
-            ..Default::default()
-        },
-    )?;
-    let (out, err) = p.communicate(None)?;
-    // TODO: Workout how to get return value into error logging
-    if let Some(_exit_status) = p.poll() {
-        return Ok(parse_btrfs_stats(
-            out.expect("Failed to get output from btrfs command"),
-        ));
+async fn fork_btrfs(cmd: Vec<String>) -> Result<HashMap<String, f64>> {
+    let command_timeout = Duration::from_secs(30);
+    let output = match timeout(
+        command_timeout,
+        Command::new(&cmd[0]).args(&cmd[1..]).output(),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            error!("{:?} timed out after {:?}", cmd, command_timeout);
+            return Ok(HashMap::new());
+        }
+    };
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        return Ok(parse_btrfs_stats(stdout));
     } else {
-        p.terminate()?;
-        error!("{:?} failed: {:?}", cmd, err);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        error!("{:?} failed: {:?}", cmd, stderr);
     }
     Ok(HashMap::new())
 }
 
 #[tracing::instrument]
-fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
+async fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
     let btrfs_bin = "/usr/bin/btrfs".to_string();
     let sudo_bin = "/usr/bin/sudo".to_string();
 
     // Call btrfs CLI to get error counters
-    let mut btrfs_threads: Vec<thread::JoinHandle<Result<HashMap<String, f64>>>> = vec![];
+    let mut tasks = vec![];
     for mountpoint in mountpoints.split(',') {
         let cmd = Vec::from([
             sudo_bin.clone(),
@@ -94,16 +98,18 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
             "stats".to_string(),
             mountpoint.to_string(),
         ]);
-        debug!("--> Making a thread to run {:?}", cmd);
-        btrfs_threads.push(thread::spawn(|| _fork_btrfs(cmd)))
+        debug!("--> Spawning async task to run {:?}", cmd);
+        tasks.push(tokio::spawn(fork_btrfs(cmd)));
     }
 
-    // Collect the stats from each thread
+    // Collect the stats from each task
     let mut stats: HashMap<String, f64> = HashMap::new();
-    for thread in btrfs_threads.into_iter() {
-        match thread.join().expect("Failed to join btrfs thread") {
-            Ok(stat_hash) => stats.extend(stat_hash),
-            Err(_) => continue, // error is logged in function ...
+    let results = join_all(tasks).await;
+    for result in results {
+        match result {
+            Ok(Ok(stat_hash)) => stats.extend(stat_hash),
+            Ok(Err(e)) => error!("Task failed: {:?}", e),
+            Err(e) => error!("Join error: {:?}", e),
         }
     }
 
@@ -111,8 +117,8 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
 }
 
 #[tokio::main(flavor = "multi_thread")]
+#[allow(clippy::await_holding_lock)]
 async fn main() -> Result<(), anyhow::Error> {
-    let mut signals = Signals::new([SIGINT]).expect("Failed to create signal handler");
     let args = Cli::parse();
     opentelemetry::global::set_text_map_propagator(
         opentelemetry::sdk::propagation::TraceContextPropagator::new(),
@@ -140,15 +146,16 @@ async fn main() -> Result<(), anyhow::Error> {
     let exporter =
         prometheus_exporter::start(binding).expect("Failed to start prometheus exporter");
 
-    // Add signal handler for clean exit
-    thread::spawn(move || {
-        for sig in signals.forever() {
-            // TODO: Print signal name somehow ...
-            info!("Received signal {:?}", sig);
-            if sig == SIGINT {
-                // Ensure all spans are flushed before exit
+    // Add async signal handler for clean exit
+    tokio::spawn(async move {
+        match signal::ctrl_c().await {
+            Ok(()) => {
+                info!("Received SIGINT, shutting down");
                 opentelemetry::global::shutdown_tracer_provider();
                 process::exit(0);
+            }
+            Err(e) => {
+                error!("Failed to listen for SIGINT: {:?}", e);
             }
         }
     });
@@ -190,38 +197,41 @@ async fn main() -> Result<(), anyhow::Error> {
             &labels,
         ).expect("Failed to register btrfs_write_io_errs gauge");
 
+    // Note: wait_request() blocks until a request arrives, then returns a guard.
+    // The guard is held across the await, but this is intentional - we need to hold the guard
+    // while collecting and setting metrics, then drop it to send the response.
     loop {
         let guard = exporter.wait_request();
-        tracer.in_span("processing request", |_cx| {
-            // TODO: Use context
-            let stats_hash =
-                get_btrfs_stats(args.mountpoints.clone()).expect("Failed to get btrfs stats");
-            debug!("Stats collected: {:?}", stats_hash);
 
-            // TODO: Move to function passing all guages etc.
-            for (k, err_count) in &stats_hash {
-                let k_parts: Vec<&str> = k.split('_').collect();
-                let device: String = k_parts[0].to_string();
-                let replace_pattern = format!("{}_", device);
-                let stat_name = k.replace(&replace_pattern, "");
+        // Collect stats on-demand after receiving the scrape request
+        let stats_hash = get_btrfs_stats(args.mountpoints.clone())
+            .await
+            .expect("Failed to get btrfs stats");
+        debug!("Stats collected: {:?}", stats_hash);
 
-                let mut stat_guage: Option<&GaugeVec> = None;
-                match stat_name.as_str() {
-                    "corruption_errs" => stat_guage = Some(&corruption_errs),
-                    "flush_io_errs" => stat_guage = Some(&flush_io_errs),
-                    "generation_errs" => stat_guage = Some(&generation_errs),
-                    "read_io_errs" => stat_guage = Some(&read_io_errs),
-                    "write_io_errs" => stat_guage = Some(&write_io_errs),
-                    _ => error!("{} stat not handled", stat_name),
-                };
-                if let Some(stat_guage_value) = stat_guage {
-                    stat_guage_value
-                        .with_label_values(&[device.as_str()])
-                        .set(*err_count);
-                }
+        // Update gauges with collected stats
+        for (k, err_count) in &stats_hash {
+            let k_parts: Vec<&str> = k.split('_').collect();
+            let device: String = k_parts[0].to_string();
+            let replace_pattern = format!("{}_", device);
+            let stat_name = k.replace(&replace_pattern, "");
+
+            let mut stat_guage: Option<&GaugeVec> = None;
+            match stat_name.as_str() {
+                "corruption_errs" => stat_guage = Some(&corruption_errs),
+                "flush_io_errs" => stat_guage = Some(&flush_io_errs),
+                "generation_errs" => stat_guage = Some(&generation_errs),
+                "read_io_errs" => stat_guage = Some(&read_io_errs),
+                "write_io_errs" => stat_guage = Some(&write_io_errs),
+                _ => error!("{} stat not handled", stat_name),
+            };
+            if let Some(stat_guage_value) = stat_guage {
+                stat_guage_value
+                    .with_label_values(&[device.as_str()])
+                    .set(*err_count);
             }
-            info!("{} btrfs stats collected and served", stats_hash.len());
-        });
+        }
+        info!("{} btrfs stats collected and served", stats_hash.len());
         drop(guard);
     }
 }
