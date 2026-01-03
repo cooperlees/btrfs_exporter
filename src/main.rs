@@ -47,7 +47,12 @@ fn parse_btrfs_stats(stats_output: String) -> HashMap<String, f64> {
         let stat_values: Vec<&str> = dev_stats[1].split_whitespace().collect();
         let dev_path: Vec<&str> = dev_stats[0].split('/').collect();
         let hash_key = format!("{}_{}", &dev_path[2].to_string(), &stat_values[0][1..]);
-        device_stats.insert(hash_key, stat_values[1].parse::<f64>().unwrap());
+        device_stats.insert(
+            hash_key,
+            stat_values[1]
+                .parse::<f64>()
+                .expect("Failed to parse stat value"),
+        );
     }
     device_stats
 }
@@ -64,7 +69,9 @@ fn _fork_btrfs(cmd: Vec<String>) -> Result<HashMap<String, f64>> {
     let (out, err) = p.communicate(None)?;
     // TODO: Workout how to get return value into error logging
     if let Some(_exit_status) = p.poll() {
-        return Ok(parse_btrfs_stats(out.unwrap()));
+        return Ok(parse_btrfs_stats(
+            out.expect("Failed to get output from btrfs command"),
+        ));
     } else {
         p.terminate()?;
         error!("{:?} failed: {:?}", cmd, err);
@@ -94,7 +101,7 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
     // Collect the stats from each thread
     let mut stats: HashMap<String, f64> = HashMap::new();
     for thread in btrfs_threads.into_iter() {
-        match thread.join().unwrap() {
+        match thread.join().expect("Failed to join btrfs thread") {
             Ok(stat_hash) => stats.extend(stat_hash),
             Err(_) => continue, // error is logged in function ...
         }
@@ -105,7 +112,7 @@ fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), anyhow::Error> {
-    let mut signals = Signals::new([SIGINT]).unwrap();
+    let mut signals = Signals::new([SIGINT]).expect("Failed to create signal handler");
     let args = Cli::parse();
     opentelemetry::global::set_text_map_propagator(
         opentelemetry::sdk::propagation::TraceContextPropagator::new(),
@@ -129,8 +136,9 @@ async fn main() -> Result<(), anyhow::Error> {
     info!("Starting btrfs prometheus exporter on port {}", args.port);
 
     let bind_uri = format!("[::]:{}", args.port);
-    let binding = bind_uri.parse().unwrap();
-    let exporter = prometheus_exporter::start(binding).unwrap();
+    let binding = bind_uri.parse().expect("Failed to parse bind URI");
+    let exporter =
+        prometheus_exporter::start(binding).expect("Failed to start prometheus exporter");
 
     // Add signal handler for clean exit
     thread::spawn(move || {
@@ -152,7 +160,7 @@ async fn main() -> Result<(), anyhow::Error> {
         "A block checksum mismatched or a corrupted metadata header was found.",
         &labels
     )
-    .unwrap();
+    .expect("Failed to register btrfs_corruption_errs gauge");
     let flush_io_errs =
         register_gauge_vec!(
             "btrfs_flush_io_errs",
@@ -162,31 +170,32 @@ async fn main() -> Result<(), anyhow::Error> {
                 "stored on the block device before the superblock is written.",
             ),
             &labels
-        ).unwrap();
+        ).expect("Failed to register btrfs_flush_io_errs gauge");
     let generation_errs = register_gauge_vec!(
         "btrfs_generation_errs",
         "The block generation does not match the expected value (eg. stored in the parent node).",
         &labels
     )
-    .unwrap();
+    .expect("Failed to register btrfs_generation_errs gauge");
     let read_io_errs =
         register_gauge_vec!(
             "btrfs_read_io_errs",
             "Failed reads to the block devices, means that the layers beneath the filesystem were not able to satisfy the read request.",
             &labels
-        ).unwrap();
+        ).expect("Failed to register btrfs_read_io_errs gauge");
     let write_io_errs =
         register_gauge_vec!(
             "btrfs_write_io_errs",
             "Failed writes to the block devices, means that the layers beneath the filesystem were not able to satisfy the write request.",
             &labels,
-        ).unwrap();
+        ).expect("Failed to register btrfs_write_io_errs gauge");
 
     loop {
         let guard = exporter.wait_request();
         tracer.in_span("processing request", |_cx| {
             // TODO: Use context
-            let stats_hash = get_btrfs_stats(args.mountpoints.clone()).unwrap();
+            let stats_hash =
+                get_btrfs_stats(args.mountpoints.clone()).expect("Failed to get btrfs stats");
             debug!("Stats collected: {:?}", stats_hash);
 
             // TODO: Move to function passing all guages etc.
