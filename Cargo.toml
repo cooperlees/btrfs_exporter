@@ -7,7 +7,7 @@ edition = "2021"
 anyhow = "1.0"
 clap = { version = "4.5.53", features = ["derive"] }
 opentelemetry = "0.20.0"
-opentelemetry-otlp = "0.13.0"
+opentelemetry-otlp = "0.31.0"
 prometheus_exporter = "0.8.5"
 futures = "0.3"
 tracing = "0.1"
