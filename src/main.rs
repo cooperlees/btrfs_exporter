@@ -164,7 +164,9 @@ async fn main() -> Result<(), anyhow::Error> {
         match signal::ctrl_c().await {
             Ok(()) => {
                 info!("Received SIGINT, shutting down");
-                let _ = provider_for_shutdown.shutdown();
+                if let Err(e) = provider_for_shutdown.shutdown() {
+                    error!("Failed to shut down tracer provider: {:?}", e);
+                }
                 process::exit(0);
             }
             Err(e) => {
