@@ -9,6 +9,8 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, error, info};
 
 use anyhow::Result;
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_sdk as otel_sdk;
 use opentelemetry_otlp::WithExportConfig;
 // TODO: See if we can get rid of the self here + learn what it's for
 use prometheus_exporter::{self, prometheus::register_gauge_vec, prometheus::GaugeVec};
@@ -121,23 +123,33 @@ async fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
 async fn main() -> Result<(), anyhow::Error> {
     let args = Cli::parse();
     opentelemetry::global::set_text_map_propagator(
-        opentelemetry::sdk::propagation::TraceContextPropagator::new(),
+        otel_sdk::propagation::TraceContextPropagator::new(),
     );
-    let tracer = opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_exporter(
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_endpoint(&args.opentelemetry),
+
+    // Build OTLP exporter for traces
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(&args.opentelemetry)
+        .build()?;
+
+    // Create tracer provider with resource attributes
+    let tracer_provider = otel_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(
+            otel_sdk::Resource::builder()
+                .with_service_name("btrfs_exporter")
+                .with_attribute(opentelemetry::KeyValue::new(
+                    "service.version",
+                    env!("CARGO_PKG_VERSION"),
+                ))
+                .build(),
         )
-        .with_trace_config(opentelemetry::sdk::trace::Config::default().with_resource(
-            opentelemetry::sdk::Resource::new(vec![
-                opentelemetry::KeyValue::new("service.name", "btrfs_exporter"),
-                opentelemetry::KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
-            ]),
-        ))
-        .install_simple()?;
-    btrfs_exporter::setup_logging(args.log_level.into(), Some(tracer.clone()));
+        .build();
+
+    let tracer = tracer_provider.tracer("btrfs_exporter");
+    opentelemetry::global::set_tracer_provider(tracer_provider.clone());
+
+    btrfs_exporter::setup_logging(args.log_level.into(), Some(tracer));
 
     info!("Starting btrfs prometheus exporter on port {}", args.port);
 
@@ -147,11 +159,14 @@ async fn main() -> Result<(), anyhow::Error> {
         prometheus_exporter::start(binding).expect("Failed to start prometheus exporter");
 
     // Add async signal handler for clean exit
+    let provider_for_shutdown = tracer_provider.clone();
     tokio::spawn(async move {
         match signal::ctrl_c().await {
             Ok(()) => {
                 info!("Received SIGINT, shutting down");
-                opentelemetry::global::shutdown_tracer_provider();
+                if let Err(e) = provider_for_shutdown.shutdown() {
+                    error!("Failed to shut down tracer provider: {:?}", e);
+                }
                 process::exit(0);
             }
             Err(e) => {

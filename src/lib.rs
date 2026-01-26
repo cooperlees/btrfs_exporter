@@ -2,7 +2,6 @@ use std::io::stderr;
 use std::io::IsTerminal;
 
 use clap::ValueEnum;
-use opentelemetry::sdk::trace::Tracer as OtelTracer;
 use tracing_glog::Glog;
 use tracing_glog::GlogFields;
 use tracing_opentelemetry::layer as otel_layer;
@@ -33,7 +32,11 @@ impl From<LogLevels> for LevelFilter {
     }
 }
 
-pub fn setup_logging(log_filter_level: LevelFilter, otel_tracer: Option<OtelTracer>) {
+pub fn setup_logging<T>(log_filter_level: LevelFilter, otel_tracer: Option<T>)
+where
+    T: opentelemetry::trace::Tracer + Send + Sync + 'static,
+    T::Span: Send + Sync + 'static,
+{
     let fmt = fmt::Layer::default()
         .with_writer(std::io::stderr)
         .with_ansi(stderr().is_terminal())
