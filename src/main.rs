@@ -11,6 +11,7 @@ use tracing::{debug, error, info};
 use anyhow::Result;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk as otel_sdk;
+use opentelemetry_otlp::WithExportConfig;
 // TODO: See if we can get rid of the self here + learn what it's for
 use prometheus_exporter::{self, prometheus::register_gauge_vec, prometheus::GaugeVec};
 
