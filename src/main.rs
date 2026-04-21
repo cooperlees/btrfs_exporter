@@ -9,9 +9,12 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, error, info};
 
 use anyhow::Result;
+#[cfg(feature = "otel")]
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_sdk as otel_sdk;
+#[cfg(feature = "otel")]
 use opentelemetry_otlp::WithExportConfig;
+#[cfg(feature = "otel")]
+use opentelemetry_sdk as otel_sdk;
 // TODO: See if we can get rid of the self here + learn what it's for
 use prometheus_exporter::{self, prometheus::register_gauge_vec, prometheus::GaugeVec};
 
@@ -27,6 +30,7 @@ struct Cli {
     #[arg(long, short, value_enum, ignore_case = true, default_value = "Info")]
     log_level: btrfs_exporter::LogLevels,
     /// Opentelemetry endpoint
+    #[cfg(feature = "otel")]
     #[arg(long, short, default_value = "http://127.0.0.1:4317")]
     opentelemetry: String,
 }
@@ -122,34 +126,73 @@ async fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
 #[allow(clippy::await_holding_lock)]
 async fn main() -> Result<(), anyhow::Error> {
     let args = Cli::parse();
-    opentelemetry::global::set_text_map_propagator(
-        otel_sdk::propagation::TraceContextPropagator::new(),
-    );
 
-    // Build OTLP exporter for traces
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_tonic()
-        .with_endpoint(&args.opentelemetry)
-        .build()?;
+    #[cfg(feature = "otel")]
+    {
+        opentelemetry::global::set_text_map_propagator(
+            otel_sdk::propagation::TraceContextPropagator::new(),
+        );
 
-    // Create tracer provider with resource attributes
-    let tracer_provider = otel_sdk::trace::SdkTracerProvider::builder()
-        .with_batch_exporter(exporter)
-        .with_resource(
-            otel_sdk::Resource::builder()
-                .with_service_name("btrfs_exporter")
-                .with_attribute(opentelemetry::KeyValue::new(
-                    "service.version",
-                    env!("CARGO_PKG_VERSION"),
-                ))
-                .build(),
-        )
-        .build();
+        // Build OTLP exporter for traces
+        let exporter = opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(&args.opentelemetry)
+            .build()?;
 
-    let tracer = tracer_provider.tracer("btrfs_exporter");
-    opentelemetry::global::set_tracer_provider(tracer_provider.clone());
+        // Create tracer provider with resource attributes
+        let tracer_provider = otel_sdk::trace::SdkTracerProvider::builder()
+            .with_batch_exporter(exporter)
+            .with_resource(
+                otel_sdk::Resource::builder()
+                    .with_service_name("btrfs_exporter")
+                    .with_attribute(opentelemetry::KeyValue::new(
+                        "service.version",
+                        env!("CARGO_PKG_VERSION"),
+                    ))
+                    .build(),
+            )
+            .build();
 
-    btrfs_exporter::setup_logging(args.log_level.into(), Some(tracer));
+        let tracer = tracer_provider.tracer("btrfs_exporter");
+        opentelemetry::global::set_tracer_provider(tracer_provider.clone());
+
+        btrfs_exporter::setup_logging(args.log_level.into(), Some(tracer));
+
+        // Add async signal handler for clean exit with tracer flush
+        let provider_for_shutdown = tracer_provider.clone();
+        tokio::spawn(async move {
+            match signal::ctrl_c().await {
+                Ok(()) => {
+                    info!("Received SIGINT, shutting down");
+                    if let Err(e) = provider_for_shutdown.shutdown() {
+                        error!("Failed to shut down tracer provider: {:?}", e);
+                    }
+                    process::exit(0);
+                }
+                Err(e) => {
+                    error!("Failed to listen for SIGINT: {:?}", e);
+                }
+            }
+        });
+    }
+
+    #[cfg(not(feature = "otel"))]
+    {
+        btrfs_exporter::setup_logging(args.log_level.into());
+
+        // Add async signal handler for clean exit
+        tokio::spawn(async move {
+            match signal::ctrl_c().await {
+                Ok(()) => {
+                    info!("Received SIGINT, shutting down");
+                    process::exit(0);
+                }
+                Err(e) => {
+                    error!("Failed to listen for SIGINT: {:?}", e);
+                }
+            }
+        });
+    }
 
     info!("Starting btrfs prometheus exporter on port {}", args.port);
 
@@ -157,23 +200,6 @@ async fn main() -> Result<(), anyhow::Error> {
     let binding = bind_uri.parse().expect("Failed to parse bind URI");
     let exporter =
         prometheus_exporter::start(binding).expect("Failed to start prometheus exporter");
-
-    // Add async signal handler for clean exit
-    let provider_for_shutdown = tracer_provider.clone();
-    tokio::spawn(async move {
-        match signal::ctrl_c().await {
-            Ok(()) => {
-                info!("Received SIGINT, shutting down");
-                if let Err(e) = provider_for_shutdown.shutdown() {
-                    error!("Failed to shut down tracer provider: {:?}", e);
-                }
-                process::exit(0);
-            }
-            Err(e) => {
-                error!("Failed to listen for SIGINT: {:?}", e);
-            }
-        }
-    });
 
     // https://btrfs.readthedocs.io/en/latest/btrfs-device.html#device-stats
     let labels = vec!["device"];

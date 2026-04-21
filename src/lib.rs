@@ -4,7 +4,6 @@ use std::io::IsTerminal;
 use clap::ValueEnum;
 use tracing_glog::Glog;
 use tracing_glog::GlogFields;
-use tracing_opentelemetry::layer as otel_layer;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
@@ -32,6 +31,7 @@ impl From<LogLevels> for LevelFilter {
     }
 }
 
+#[cfg(feature = "otel")]
 pub fn setup_logging<T>(log_filter_level: LevelFilter, otel_tracer: Option<T>)
 where
     T: opentelemetry::trace::Tracer + Send + Sync + 'static,
@@ -46,11 +46,26 @@ where
 
     let registry = Registry::default().with(fmt);
     if let Some(tracer) = otel_tracer {
-        let subscriber = registry.with(otel_layer().with_tracer(tracer));
+        let subscriber =
+            registry.with(tracing_opentelemetry::layer().with_tracer(tracer));
         tracing::subscriber::set_global_default(subscriber)
             .expect("Unable to set global tracing subscriber");
     } else {
         tracing::subscriber::set_global_default(registry)
             .expect("Unable to set global tracing subscriber");
     }
+}
+
+#[cfg(not(feature = "otel"))]
+pub fn setup_logging(log_filter_level: LevelFilter) {
+    let fmt = fmt::Layer::default()
+        .with_writer(std::io::stderr)
+        .with_ansi(stderr().is_terminal())
+        .event_format(Glog::default().with_timer(tracing_glog::LocalTime::default()))
+        .fmt_fields(GlogFields::default())
+        .with_filter(log_filter_level);
+
+    let registry = Registry::default().with(fmt);
+    tracing::subscriber::set_global_default(registry)
+        .expect("Unable to set global tracing subscriber");
 }
