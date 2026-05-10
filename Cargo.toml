@@ -11,7 +11,7 @@ otel = ["dep:opentelemetry", "dep:opentelemetry-otlp", "dep:opentelemetry_sdk", 
 anyhow = "1.0"
 clap = { version = "4.5.53", features = ["derive"] }
 opentelemetry = { version = "0.31.0", optional = true }
-opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic"], optional = true }
+opentelemetry-otlp = { version = "0.32.0", features = ["grpc-tonic"], optional = true }
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio", "trace"], optional = true }
 prometheus_exporter = "0.8.5"
 futures = "0.3"
