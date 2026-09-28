@@ -16,15 +16,15 @@ use opentelemetry_otlp::WithExportConfig;
 #[cfg(feature = "otel")]
 use opentelemetry_sdk as otel_sdk;
 // TODO: See if we can get rid of the self here + learn what it's for
-use prometheus_exporter::{self, prometheus::register_gauge_vec, prometheus::GaugeVec};
+use prometheus_exporter::{prometheus::register_gauge_vec, prometheus::GaugeVec};
 
 #[derive(Debug, Parser)]
-#[clap(author, version, about, long_about = None)]
+#[command(author, version, about)]
 struct Cli {
     /// Mountpoints to grab stats for
     mountpoints: String,
     /// Port to listen on
-    #[clap(short, long, value_parser, default_value_t = 9899)]
+    #[arg(short, long, default_value_t = 9899)]
     port: u32,
     /// Adjust the console log-level
     #[arg(long, short, value_enum, ignore_case = true, default_value = "Info")]
@@ -35,36 +35,60 @@ struct Cli {
     opentelemetry: String,
 }
 
-// TODO - Change hashmaps to use this + implement traits to learn
-#[allow(dead_code)]
-struct BtrfsErrors {
-    corruption_io_errs: f64,
-    flush_io_errs: f64,
-    generation_io_errs: f64,
-    read_io_errs: f64,
-    write_io_errs: f64,
+/// A single error counter for one device, e.g. `("sda", "write_io_errs") -> 3.0`.
+///
+/// `btrfs device stats` lines look like `[/dev/sda].write_io_errs   3`;
+/// parsing yields the device name plus the stat name separately so callers
+/// never have to split a joined string key back apart.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DeviceStat {
+    device: String,
+    stat: String,
+}
+
+/// Parse one `btrfs device stats` output line.
+/// Returns `None` (and logs a warning) for malformed lines instead of
+/// panicking, so one unexpected line can't take down the whole exporter.
+#[tracing::instrument]
+fn parse_btrfs_stats_line(line: &str) -> Option<(DeviceStat, f64)> {
+    // Expected shape: "[/dev/<device>].<stat_name>   <value>"
+    let (device_part, rest) = line.split_once(']')?;
+    let device = device_part.rsplit('/').next().filter(|s| !s.is_empty())?;
+    let rest = rest.strip_prefix('.')?;
+    let (stat_name, value_str) = rest.split_once(char::is_whitespace)?;
+    if stat_name.is_empty() {
+        return None;
+    }
+    let value: f64 = value_str.trim().parse().ok()?;
+    Some((
+        DeviceStat {
+            device: device.to_string(),
+            stat: stat_name.to_string(),
+        },
+        value,
+    ))
 }
 
 #[tracing::instrument]
-fn parse_btrfs_stats(stats_output: String) -> HashMap<String, f64> {
+fn parse_btrfs_stats(stats_output: &str) -> HashMap<DeviceStat, f64> {
     let mut device_stats = HashMap::new();
     for line in stats_output.lines() {
-        let dev_stats: Vec<&str> = line.split(']').collect();
-        let stat_values: Vec<&str> = dev_stats[1].split_whitespace().collect();
-        let dev_path: Vec<&str> = dev_stats[0].split('/').collect();
-        let hash_key = format!("{}_{}", &dev_path[2].to_string(), &stat_values[0][1..]);
-        device_stats.insert(
-            hash_key,
-            stat_values[1]
-                .parse::<f64>()
-                .expect("Failed to parse stat value"),
-        );
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match parse_btrfs_stats_line(line) {
+            Some((key, value)) => {
+                device_stats.insert(key, value);
+            }
+            None => error!("Skipping malformed btrfs stats line: {:?}", line),
+        }
     }
     device_stats
 }
 
 #[tracing::instrument]
-async fn fork_btrfs(cmd: Vec<String>) -> Result<HashMap<String, f64>> {
+async fn fork_btrfs(cmd: Vec<String>) -> Result<HashMap<DeviceStat, f64>> {
     let command_timeout = Duration::from_secs(30);
     let output = match timeout(
         command_timeout,
@@ -80,8 +104,8 @@ async fn fork_btrfs(cmd: Vec<String>) -> Result<HashMap<String, f64>> {
     };
 
     if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        return Ok(parse_btrfs_stats(stdout));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Ok(parse_btrfs_stats(&stdout));
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         error!("{:?} failed: {:?}", cmd, stderr);
@@ -90,7 +114,7 @@ async fn fork_btrfs(cmd: Vec<String>) -> Result<HashMap<String, f64>> {
 }
 
 #[tracing::instrument]
-async fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
+async fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<DeviceStat, f64>> {
     let btrfs_bin = "/usr/bin/btrfs".to_string();
     let sudo_bin = "/usr/bin/sudo".to_string();
 
@@ -109,7 +133,7 @@ async fn get_btrfs_stats(mountpoints: String) -> Result<HashMap<String, f64>> {
     }
 
     // Collect the stats from each task
-    let mut stats: HashMap<String, f64> = HashMap::new();
+    let mut stats: HashMap<DeviceStat, f64> = HashMap::new();
     let results = join_all(tasks).await;
     for result in results {
         match result {
@@ -251,24 +275,21 @@ async fn main() -> Result<(), anyhow::Error> {
         debug!("Stats collected: {:?}", stats_hash);
 
         // Update gauges with collected stats
-        for (k, err_count) in &stats_hash {
-            let k_parts: Vec<&str> = k.split('_').collect();
-            let device: String = k_parts[0].to_string();
-            let replace_pattern = format!("{}_", device);
-            let stat_name = k.replace(&replace_pattern, "");
-
-            let mut stat_guage: Option<&GaugeVec> = None;
-            match stat_name.as_str() {
-                "corruption_errs" => stat_guage = Some(&corruption_errs),
-                "flush_io_errs" => stat_guage = Some(&flush_io_errs),
-                "generation_errs" => stat_guage = Some(&generation_errs),
-                "read_io_errs" => stat_guage = Some(&read_io_errs),
-                "write_io_errs" => stat_guage = Some(&write_io_errs),
-                _ => error!("{} stat not handled", stat_name),
+        for (stat, err_count) in &stats_hash {
+            let stat_gauge: Option<&GaugeVec> = match stat.stat.as_str() {
+                "corruption_errs" => Some(&corruption_errs),
+                "flush_io_errs" => Some(&flush_io_errs),
+                "generation_errs" => Some(&generation_errs),
+                "read_io_errs" => Some(&read_io_errs),
+                "write_io_errs" => Some(&write_io_errs),
+                _ => {
+                    error!("{} stat not handled", stat.stat);
+                    None
+                }
             };
-            if let Some(stat_guage_value) = stat_guage {
-                stat_guage_value
-                    .with_label_values(&[device.as_str()])
+            if let Some(stat_gauge_value) = stat_gauge {
+                stat_gauge_value
+                    .with_label_values(&[stat.device.as_str()])
                     .set(*err_count);
             }
         }
@@ -282,18 +303,63 @@ mod tests {
     // Note this useful idiom: importing names from outer (for mod tests) scope.
     use super::*;
 
+    fn device_stat(device: &str, stat: &str) -> DeviceStat {
+        DeviceStat {
+            device: device.to_string(),
+            stat: stat.to_string(),
+        }
+    }
+
     #[test]
     fn test_parsing_btrfs_errs() {
         let btrfs_error_output = "[/dev/sdb].write_io_errs    0
 [/dev/sdb].read_io_errs     0
 [/dev/sdc].write_io_errs    69";
-        let mut expected_stats_map: HashMap<String, f64> = HashMap::new();
-        expected_stats_map.insert("sdb_write_io_errs".to_string(), 0.0);
-        expected_stats_map.insert("sdb_read_io_errs".to_string(), 0.0);
-        expected_stats_map.insert("sdc_write_io_errs".to_string(), 69.0);
+        let mut expected_stats_map: HashMap<DeviceStat, f64> = HashMap::new();
+        expected_stats_map.insert(device_stat("sdb", "write_io_errs"), 0.0);
+        expected_stats_map.insert(device_stat("sdb", "read_io_errs"), 0.0);
+        expected_stats_map.insert(device_stat("sdc", "write_io_errs"), 69.0);
+        assert_eq!(expected_stats_map, parse_btrfs_stats(btrfs_error_output));
+    }
+
+    #[test]
+    fn test_malformed_lines_are_skipped_not_panics() {
+        // Malformed lines must be skipped; previously every one of these
+        // would have panicked on indexing or .expect().
+        for bad_line in [
+            "",
+            "   ",
+            "garbage without brackets",
+            "[/dev/sda].write_io_errs",        // missing value
+            "[/dev/sda] write_io_errs 3",      // missing dot separator
+            "[/dev/sda].write_io_errs banana", // non-numeric value
+            "[/dev/].write_io_errs 3",         // missing device name
+            "[/dev/sda]. 3",                   // missing stat name
+            ".write_io_errs 3",                // missing device part
+        ] {
+            assert_eq!(
+                None,
+                parse_btrfs_stats_line(bad_line),
+                "line should be rejected: {:?}",
+                bad_line
+            );
+        }
+        // ... and a valid line next to garbage still parses.
+        let mixed = "garbage line\n[/dev/nvme0n1].read_io_errs    42\n[/dev/].oops\n";
+        let mut expected: HashMap<DeviceStat, f64> = HashMap::new();
+        expected.insert(device_stat("nvme0n1", "read_io_errs"), 42.0);
+        assert_eq!(expected, parse_btrfs_stats(mixed));
+    }
+
+    #[test]
+    fn test_device_names_with_underscores_survive() {
+        // The old "device_stat" string-key scheme split on '_' and
+        // mis-attributed stats for devices containing underscores.
+        let output = "[/dev/mapper/vg_data-lv0].write_io_errs    7";
+        let stats = parse_btrfs_stats(output);
         assert_eq!(
-            expected_stats_map,
-            parse_btrfs_stats(btrfs_error_output.to_string())
+            Some(&7.0),
+            stats.get(&device_stat("vg_data-lv0", "write_io_errs"))
         );
     }
 }
