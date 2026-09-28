@@ -5,6 +5,16 @@ updates:
     schedule:
       interval: "weekly"
       day: "sunday"
+    # The OpenTelemetry crates move in lockstep (tracing-opentelemetry
+    # requires a matching opentelemetry version), so group them into a
+    # single PR instead of N conflicting single-line bumps.
+    groups:
+      opentelemetry:
+        patterns:
+          - "opentelemetry"
+          - "opentelemetry-*"
+          - "opentelemetry_*"
+          - "tracing-opentelemetry"
 
   - package-ecosystem: "github-actions"
     # Workflow files in .github/workflows will be checked
