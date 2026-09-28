@@ -8,27 +8,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
+          components: rustfmt, clippy
 
       - name: Cargo format
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
+        run: cargo fmt --all -- --check
 
-      - name: Cargo test
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
+      - name: Cargo test (default features)
+        run: cargo test
+
+      - name: Cargo test (all features)
+        run: cargo test --all-features
 
       - name: Cargo clippy
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
+        run: cargo clippy --all-targets --all-features
 
       - name: Cargo release + all feature build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --all-features
+        run: cargo build --release --all-features
