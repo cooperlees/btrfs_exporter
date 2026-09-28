@@ -5,7 +5,7 @@ use clap::Parser;
 use futures::future::join_all;
 use tokio::process::Command;
 use tokio::signal;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use tracing::{debug, error, info};
 
 use anyhow::Result;
@@ -16,7 +16,7 @@ use opentelemetry_otlp::WithExportConfig;
 #[cfg(feature = "otel")]
 use opentelemetry_sdk as otel_sdk;
 // TODO: See if we can get rid of the self here + learn what it's for
-use prometheus_exporter::{prometheus::register_gauge_vec, prometheus::GaugeVec};
+use prometheus_exporter::{prometheus::GaugeVec, prometheus::register_gauge_vec};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
