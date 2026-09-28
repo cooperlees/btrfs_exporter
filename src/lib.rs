@@ -1,13 +1,13 @@
-use std::io::stderr;
 use std::io::IsTerminal;
+use std::io::stderr;
 
 use clap::ValueEnum;
 use tracing_glog::Glog;
 use tracing_glog::GlogFields;
+use tracing_subscriber::Registry;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::Registry;
 
 // This enum can be used to add `log-level` option to CLI binaries.
 #[derive(ValueEnum, Clone, Debug, Copy)]
