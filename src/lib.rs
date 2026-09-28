@@ -46,8 +46,7 @@ where
 
     let registry = Registry::default().with(fmt);
     if let Some(tracer) = otel_tracer {
-        let subscriber =
-            registry.with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let subscriber = registry.with(tracing_opentelemetry::layer().with_tracer(tracer));
         tracing::subscriber::set_global_default(subscriber)
             .expect("Unable to set global tracing subscriber");
     } else {
